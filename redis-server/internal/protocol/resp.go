@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -23,6 +24,33 @@ func NewRESPReader(reader io.Reader) *RESPReader {
 		reader: bufio.NewReader(reader),
 		offset: 0,
 	}
+}
+
+// Writer returns the underlying bufio.Writer
+func (r *RESPReader) Reader() *bufio.Reader {
+	return r.reader
+}
+
+// Read simple string
+func (r *RESPReader) ReadSimpleString() (string, error) {
+	// Read the first byte
+	typ, err := r.reader.ReadByte()
+	if err != nil {
+		return "", fmt.Errorf("error reading type: %w", err)
+	}
+	r.offset++
+
+	if RESPType(typ) != SimpleString {
+		return "", NewParseError("expected simple string", r.offset-1)
+	}
+
+	// Read until CRLF
+	line, err := r.readLine()
+	if err != nil {
+		return "", err
+	}
+
+	return string(line), nil
 }
 
 // ReadCommand reads and parses a complete RESP command
@@ -167,13 +195,27 @@ func (r *RESPReader) readCRLF() error {
 // RESPWriter handles writing RESP protocol responses
 type RESPWriter struct {
 	writer *bufio.Writer
+	conn   net.Conn
 }
 
-// NewRESPWriter creates a new RESPWriter
-func NewRESPWriter(writer io.Writer) *RESPWriter {
+// NewRESPWriter creates a new RESPWriter from a connection
+func NewRESPWriter(conn net.Conn) *RESPWriter {
 	return &RESPWriter{
-		writer: bufio.NewWriter(writer),
+		writer: bufio.NewWriter(conn),
+		conn:   conn,
 	}
+}
+
+func (w *RESPWriter) Conn() net.Conn {
+	return w.conn
+}
+
+// RemoteAddr returns the remote network address
+func (w *RESPWriter) RemoteAddr() net.Addr {
+	if w.conn == nil {
+		return nil
+	}
+	return w.conn.RemoteAddr()
 }
 
 // WriteSimpleString writes a RESP simple string
@@ -243,4 +285,18 @@ func (w *RESPWriter) WriteArray(items [][]byte) error {
 	}
 
 	return w.writer.Flush()
+}
+
+// Writer returns the underlying bufio.Writer
+func (w *RESPWriter) Writer() *bufio.Writer {
+	return w.writer
+}
+
+// Write writes raw bytes directly
+func (w *RESPWriter) Write(b []byte) (int, error) {
+	n, err := w.writer.Write(b)
+	if err != nil {
+		return n, err
+	}
+	return n, w.writer.Flush()
 }

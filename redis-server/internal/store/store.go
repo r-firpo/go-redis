@@ -240,3 +240,37 @@ func (ds *DataStore) Keys() []string {
 
 	return keys
 }
+
+// SaveRDB forces an immediate RDB save and returns the path to the RDB file
+func (ds *DataStore) SaveRDB() error {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+
+	ds.logger.Debug("Performing forced RDB save for replication")
+
+	items := make(map[string]persistence.Item)
+	for key, value := range ds.data {
+		item := persistence.Item{Value: value}
+		if expireTime, exists := ds.expires[key]; exists {
+			ms := expireTime.UnixMilli()
+			item.ExpireAt = &ms
+		}
+		items[key] = item
+	}
+
+	if err := ds.rdbHandler.Save(items); err != nil {
+		ds.logger.Error("Failed forced RDB save", zap.Error(err))
+		return err
+	}
+
+	ds.logger.Info("Successfully completed forced RDB save",
+		zap.Int("keys", len(items)),
+	)
+	return nil
+}
+
+// LoadRDB reloads data from the RDB file
+func (ds *DataStore) LoadRDB() error {
+	ds.logger.Debug("Loading data from RDB file")
+	return ds.loadFromRDB()
+}
