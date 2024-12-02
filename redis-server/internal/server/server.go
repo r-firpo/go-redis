@@ -38,6 +38,7 @@ type Server struct {
 func NewServer(cfg *config.Config, logger *zap.Logger) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	store := store.NewDataStore(logger, cfg.Dir, cfg.DBFilename)
+	store.StartPeriodicSave(ctx)
 
 	srv := &Server{
 		addr:          fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -330,6 +331,46 @@ func (s *Server) handleCommand(cmd *protocol.Command, writer *protocol.RESPWrite
 			return writer.WriteArray(nil) // Empty array response
 		}
 		return writer.WriteArray(nil) // Empty array response
+
+	case "WAIT":
+		if len(cmd.Args) != 2 {
+			return writer.WriteError("wrong number of arguments for WAIT command")
+		}
+
+		// Parse numreplicas argument
+		numReplicas, err := strconv.Atoi(cmd.Args[0])
+		if err != nil {
+			return writer.WriteError("value is not an integer or out of range")
+		}
+		if numReplicas < 0 {
+			return writer.WriteError("numreplicas must be non-negative")
+		}
+
+		// Parse timeout argument
+		timeout, err := strconv.Atoi(cmd.Args[1])
+		if err != nil {
+			return writer.WriteError("value is not an integer or out of range")
+		}
+		if timeout < 0 {
+			return writer.WriteError("timeout must be non-negative")
+		}
+
+		// Only process WAIT if we're master
+		if s.config.Role != config.RoleMaster || s.masterHandler == nil {
+			return writer.WriteInteger(0)
+		}
+
+		// Convert timeout to duration (0 means no timeout)
+		var waitTimeout time.Duration
+		if timeout > 0 {
+			waitTimeout = time.Duration(timeout) * time.Millisecond
+		} else {
+			waitTimeout = 24 * time.Hour // Use a very long timeout for 0
+		}
+
+		// Wait for replicas
+		ackCount := s.masterHandler.WaitForReplicas(numReplicas, s.masterHandler.Offset, waitTimeout)
+		return writer.WriteInteger(ackCount)
 
 	default:
 		return writer.WriteError("unknown command '" + cmd.Name + "'")

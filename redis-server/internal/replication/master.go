@@ -26,7 +26,7 @@ type MasterHandler struct {
 	replicas map[string]*ReplicaInfo // addr -> replica info
 	backlog  []byte                  // Command backlog
 	mu       sync.RWMutex
-	offset   int64 // Master's current offset
+	Offset   int64 // Master's current Offset
 }
 
 type ReplicaInfo struct {
@@ -43,7 +43,7 @@ func NewMasterHandler(cfg *config.Config, store *store.DataStore, logger *zap.Lo
 		logger:   logger,
 		replicas: make(map[string]*ReplicaInfo),
 		backlog:  make([]byte, 0), // Initialize empty backlog
-		offset:   0,               // Start at offset 0
+		Offset:   0,               // Start at offset 0
 	}
 }
 
@@ -66,7 +66,7 @@ func (m *MasterHandler) AddReplica(conn net.Conn, writer *protocol.RESPWriter) e
 	m.replicas[addr] = &ReplicaInfo{
 		Conn:        conn,
 		Writer:      writer,
-		Offset:      m.offset, // Start at current master offset
+		Offset:      m.Offset, // Start at current master offset
 		LastAckTime: time.Now(),
 	}
 
@@ -148,7 +148,14 @@ func (m *MasterHandler) PropagateCommand(cmd []byte) {
 
 	// Add to backlog and update master offset
 	m.backlog = append(m.backlog, cmd...)
-	m.offset += int64(len(cmd))
+	m.Offset += int64(len(cmd))
+
+	// Trim backlog if needed
+	if len(m.backlog) > m.config.Replication.BacklogSize {
+		excess := len(m.backlog) - m.config.Replication.BacklogSize
+		m.backlog = m.backlog[excess:]
+		m.config.Replication.BacklogOffset += int64(excess)
+	}
 
 	// Send to all replicas
 	for addr, replica := range m.replicas {
@@ -182,8 +189,39 @@ func (m *MasterHandler) ProcessACK(addr string, offsetStr string) error {
 		m.logger.Debug("Processed replica ACK",
 			zap.String("addr", addr),
 			zap.Int64("replica_offset", offset),
-			zap.Int64("master_offset", m.offset))
+			zap.Int64("master_offset", m.Offset))
 	}
 
 	return nil
+}
+
+// WaitForReplicas waits for the specified number of replicas to reach the given offset
+func (m *MasterHandler) WaitForReplicas(numReplicas int, targetOffset int64, timeout time.Duration) int {
+	if len(m.replicas) == 0 {
+		return 0
+	}
+
+	// Create a deadline for timeout
+	deadline := time.Now().Add(timeout)
+
+	count := 0
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		for _, replica := range m.replicas {
+			if replica.Offset >= targetOffset {
+				count++
+			}
+		}
+		m.mu.RUnlock()
+
+		// If we have enough replicas, return immediately
+		if count >= numReplicas {
+			return count
+		}
+
+		// Wait a bit before checking again
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return count
 }

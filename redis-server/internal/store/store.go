@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -273,4 +274,23 @@ func (ds *DataStore) SaveRDB() error {
 func (ds *DataStore) LoadRDB() error {
 	ds.logger.Debug("Loading data from RDB file")
 	return ds.loadFromRDB()
+}
+
+// Periodic RDB saves every minute
+func (s *DataStore) StartPeriodicSave(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.SaveRDB(); err != nil {
+					s.logger.Error("Failed periodic RDB save", zap.Error(err))
+				}
+			}
+		}
+	}()
 }
