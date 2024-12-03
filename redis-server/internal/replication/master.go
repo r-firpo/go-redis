@@ -203,16 +203,25 @@ func (m *MasterHandler) WaitForReplicas(numReplicas int, targetOffset int64, tim
 
 	// Create a deadline for timeout
 	deadline := time.Now().Add(timeout)
-
 	count := 0
+	var unlocked bool
+	// Safety defer in case of panic
+	defer func() {
+		if !unlocked {
+			m.mu.RUnlock()
+		}
+	}()
+
 	for time.Now().Before(deadline) {
 		m.mu.RLock()
+		unlocked = false
 		for _, replica := range m.replicas {
 			if replica.Offset >= targetOffset {
 				count++
 			}
 		}
 		m.mu.RUnlock()
+		unlocked = true // Mark as unlocked
 
 		// If we have enough replicas, return immediately
 		if count >= numReplicas {
